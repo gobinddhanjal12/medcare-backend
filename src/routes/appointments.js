@@ -214,43 +214,40 @@ router.get("/pending-requests", async (req, res) => {
 // Admin approve/reject appointment request
 router.patch(
   "/:id/request-status",
+  [verifyToken, checkRole(["admin"])],
   async (req, res) => {
     try {
-      const { request_status } = req.body;
-      if (!["approved", "rejected"].includes(request_status)) {
+      const { id } = req.params;
+      const { status } = req.body;
+
+      if (!['approved', 'rejected'].includes(status)) {
         return res.status(400).json({
-          status: "error",
-          message: "Invalid request status",
+          status: 'error',
+          message: 'Invalid status. Must be either "approved" or "rejected"'
         });
       }
 
+      // First get the appointment details
       const appointmentCheck = await pool.query(
         `SELECT a.*, ts.start_time, ts.end_time 
          FROM appointments a
          JOIN time_slots ts ON a.time_slot_id = ts.id
          WHERE a.id = $1`,
-        [req.params.id]
+        [id]
       );
 
       if (appointmentCheck.rows.length === 0) {
         return res.status(404).json({
-          status: "error",
-          message: "Appointment not found",
+          status: 'error',
+          message: 'Appointment not found'
         });
       }
 
       const appointment = appointmentCheck.rows[0];
 
-      if (appointment.request_status !== "pending") {
-        return res.status(400).json({
-          status: "error",
-          message: "This appointment request has already been processed",
-        });
-      }
-
-      // If trying to approve, check if the time slot is already booked
-      if (request_status === "approved") {
-        const existingAppointment = await pool.query(
+      // If approving, check if doctor is available at that time slot
+      if (status === 'approved') {
+        const availabilityCheck = await pool.query(
           `SELECT a.*, u.name as patient_name
            FROM appointments a
            JOIN users u ON a.patient_id = u.id
@@ -260,40 +257,63 @@ router.patch(
            AND a.request_status = 'approved'
            AND a.status != 'cancelled'
            AND a.id != $4`,
-          [appointment.doctor_id, appointment.appointment_date, appointment.time_slot_id, appointment.id]
+          [
+            appointment.doctor_id,
+            appointment.appointment_date,
+            appointment.time_slot_id,
+            id
+          ]
         );
 
-        if (existingAppointment.rows.length > 0) {
+        if (availabilityCheck.rows.length > 0) {
           return res.status(400).json({
-            status: "error",
-            message: `This time slot is already booked by ${existingAppointment.rows[0].patient_name}`,
+            status: 'error',
+            message: `This time slot is already booked by ${availabilityCheck.rows[0].patient_name}`
           });
         }
       }
 
+      // Update the appointment status
       const result = await pool.query(
-        `UPDATE appointments 
-         SET request_status = $1, updated_at = NOW()
-         WHERE id = $2
-         RETURNING *`,
-        [request_status, req.params.id]
+        'UPDATE appointments SET request_status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+        [status, id]
       );
 
+      // If approved, reject other pending appointments for the same time slot
+      if (status === 'approved') {
+        await pool.query(
+          `UPDATE appointments 
+           SET request_status = 'rejected', updated_at = NOW() 
+           WHERE time_slot_id = $1 
+           AND doctor_id = $2 
+           AND appointment_date = $3 
+           AND id != $4 
+           AND request_status = 'pending'`,
+          [
+            appointment.time_slot_id,
+            appointment.doctor_id,
+            appointment.appointment_date,
+            id
+          ]
+        );
+      }
+
       res.json({
-        status: "success",
-        message: `Appointment request ${request_status} successfully`,
-        data: result.rows[0],
+        status: 'success',
+        data: result.rows[0]
       });
     } catch (error) {
-      console.error("Update request status error:", error);
+      console.error('Update appointment status error:', error);
       res.status(500).json({
-        status: "error",
-        message: "Error updating request status",
+        status: 'error',
+        message: 'Error updating appointment status',
+        details: error.message
       });
     }
   }
 );
 
+// Get doctor's appointments
 router.get(
   "/doctor/:doctorId",
   [verifyToken, checkRole(["doctor", "admin"])],
@@ -301,17 +321,16 @@ router.get(
     try {
       const { date, status } = req.query;
       let query = `
-            SELECT a.*, 
-                   u.first_name as patient_first_name,
-                   u.last_name as patient_last_name,
-                   u.email as patient_email,
-                   ts.start_time,
-                   ts.end_time
-            FROM appointments a
-            JOIN users u ON a.patient_id = u.id
-            JOIN time_slots ts ON a.time_slot_id = ts.id
-            WHERE a.doctor_id = $1
-        `;
+        SELECT a.*, 
+               u.name as patient_name,
+               u.email as patient_email,
+               ts.start_time,
+               ts.end_time
+        FROM appointments a
+        JOIN users u ON a.patient_id = u.id
+        JOIN time_slots ts ON a.time_slot_id = ts.id
+        WHERE a.doctor_id = $1
+      `;
       const queryParams = [req.params.doctorId];
 
       if (date) {
@@ -342,6 +361,7 @@ router.get(
   }
 );
 
+// Get patient's appointments
 router.get(
   "/patient",
   [verifyToken, checkRole(["patient"])],
@@ -349,18 +369,18 @@ router.get(
     try {
       const { status } = req.query;
       let query = `
-            SELECT a.*, 
-                   d.specialty,
-                   u.first_name as doctor_first_name,
-                   u.last_name as doctor_last_name,
-                   ts.start_time,
-                   ts.end_time
-            FROM appointments a
-            JOIN doctors d ON a.doctor_id = d.id
-            JOIN users u ON d.user_id = u.id
-            JOIN time_slots ts ON a.time_slot_id = ts.id
-            WHERE a.patient_id = $1
-        `;
+        SELECT a.*, 
+               d.specialty,
+               u.name as doctor_name,
+               u.email as doctor_email,
+               ts.start_time,
+               ts.end_time
+        FROM appointments a
+        JOIN doctors d ON a.doctor_id = d.id
+        JOIN users u ON d.user_id = u.id
+        JOIN time_slots ts ON a.time_slot_id = ts.id
+        WHERE a.patient_id = $1
+      `;
       const queryParams = [req.user.id];
 
       if (status) {
@@ -485,6 +505,133 @@ router.patch(
       res.status(500).json({
         status: "error",
         message: "Error cancelling appointment",
+      });
+    }
+  }
+);
+
+// Get appointment details
+router.get("/:id", [verifyToken], async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+        a.*,
+        d.specialty,
+        d.location,
+        d.consultation_fee,
+        u.name as doctor_name,
+        u.email as doctor_email,
+        p.name as patient_name,
+        p.email as patient_email,
+        ts.start_time,
+        ts.end_time
+      FROM appointments a
+      JOIN doctors d ON a.doctor_id = d.id
+      JOIN users u ON d.user_id = u.id
+      JOIN users p ON a.patient_id = p.id
+      JOIN time_slots ts ON a.time_slot_id = ts.id
+      WHERE a.id = $1 AND (a.patient_id = $2 OR u.id = $2)`,
+      [req.params.id, req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        message: "Appointment not found or unauthorized",
+      });
+    }
+
+    res.json({
+      status: "success",
+      data: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Get appointment details error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Error fetching appointment details",
+    });
+  }
+});
+
+// Get user's appointments
+router.get("/my-appointments", [verifyToken], async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+        a.*,
+        d.specialty,
+        d.location,
+        d.consultation_fee,
+        u.name as doctor_name,
+        u.email as doctor_email,
+        ts.start_time,
+        ts.end_time
+      FROM appointments a
+      JOIN doctors d ON a.doctor_id = d.id
+      JOIN users u ON d.user_id = u.id
+      JOIN time_slots ts ON a.time_slot_id = ts.id
+      WHERE a.patient_id = $1
+      ORDER BY a.appointment_date DESC, ts.start_time DESC`,
+      [req.user.id]
+    );
+
+    res.json({
+      status: "success",
+      data: result.rows,
+    });
+  } catch (error) {
+    console.error("Get user appointments error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Error fetching user appointments",
+    });
+  }
+});
+
+// Get appointments for a specific user
+router.get(
+  "/user/:userId",
+  [verifyToken, checkRole(["admin"])],
+  async (req, res) => {
+    try {
+      const { status } = req.query;
+      let query = `
+        SELECT 
+          a.*,
+          d.specialty,
+          d.location,
+          d.consultation_fee,
+          u.name as doctor_name,
+          u.email as doctor_email,
+          ts.start_time,
+          ts.end_time
+        FROM appointments a
+        JOIN doctors d ON a.doctor_id = d.id
+        JOIN users u ON d.user_id = u.id
+        JOIN time_slots ts ON a.time_slot_id = ts.id
+        WHERE a.patient_id = $1
+      `;
+      const queryParams = [req.params.userId];
+
+      if (status) {
+        query += ` AND a.status = $${queryParams.length + 1}`;
+        queryParams.push(status);
+      }
+
+      query += ` ORDER BY a.appointment_date DESC, ts.start_time DESC`;
+
+      const result = await pool.query(query, queryParams);
+
+      res.json({
+        status: "success",
+        data: result.rows,
+      });
+    } catch (error) {
+      console.error("Get user appointments error:", error);
+      res.status(500).json({
+        status: "error",
+        message: "Error fetching user appointments",
       });
     }
   }

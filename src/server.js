@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const authRoutes = require('./routes/auth');
 const doctorRoutes = require('./routes/doctors');
 const appointmentRoutes = require('./routes/appointments');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 
@@ -18,8 +19,8 @@ app.use(helmet({
 }));
 app.use(cors({
     origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret'],
     exposedHeaders: ['Content-Range', 'X-Content-Range'],
     credentials: true
 }));
@@ -43,6 +44,7 @@ app.use('/api/', limiter);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/doctors', doctorRoutes);
 app.use('/api/v1/appointments', appointmentRoutes);
+app.use('/api/v1/admin', adminRoutes);
 
 app.use((req, res) => {
     res.status(404).json({
