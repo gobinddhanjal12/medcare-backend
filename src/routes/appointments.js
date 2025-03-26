@@ -367,7 +367,9 @@ router.get(
   [verifyToken, checkRole(["patient"])],
   async (req, res) => {
     try {
-      const { status } = req.query;
+      const { status, page = 1, limit = 10 } = req.query;
+      const offset = (page - 1) * limit;
+
       let query = `
         SELECT a.*, 
                d.specialty,
@@ -388,13 +390,34 @@ router.get(
         queryParams.push(status);
       }
 
-      query += ` ORDER BY a.appointment_date, ts.start_time`;
+      // Get total count for pagination
+      const countQuery = `
+        SELECT COUNT(*) 
+        FROM appointments a
+        WHERE a.patient_id = $1
+        ${status ? 'AND a.status = $2' : ''}
+      `;
+      const countParams = status ? [req.user.id, status] : [req.user.id];
+      const totalCount = await pool.query(countQuery, countParams);
+
+      // Add pagination to main query
+      query += ` ORDER BY a.appointment_date DESC, ts.start_time DESC LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`;
+      queryParams.push(limit, offset);
 
       const result = await pool.query(query, queryParams);
+
+      const total = parseInt(totalCount.rows[0].count);
+      const pages = Math.ceil(total / limit);
 
       res.json({
         status: "success",
         data: result.rows,
+        pagination: {
+          total,
+          page: parseInt(page),
+          pages,
+          limit: parseInt(limit)
+        }
       });
     } catch (error) {
       console.error("Get patient appointments error:", error);

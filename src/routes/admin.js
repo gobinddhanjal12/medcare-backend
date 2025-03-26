@@ -66,6 +66,64 @@ router.get('/appointments/pending', async (req, res) => {
   }
 });
 
+// Update appointment request status (approve/reject)
+router.patch('/appointments/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid status. Must be either "approved" or "rejected"'
+      });
+    }
+
+    const result = await pool.query(
+      'UPDATE appointments SET request_status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+      [status, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Appointment not found'
+      });
+    }
+
+    // If approved, reject other pending appointments for the same time slot
+    if (status === 'approved') {
+      await pool.query(
+        `UPDATE appointments 
+         SET request_status = 'rejected', updated_at = NOW() 
+         WHERE time_slot_id = $1 
+         AND doctor_id = $2 
+         AND appointment_date = $3 
+         AND id != $4 
+         AND request_status = 'pending'`,
+        [
+          result.rows[0].time_slot_id,
+          result.rows[0].doctor_id,
+          result.rows[0].appointment_date,
+          id
+        ]
+      );
+    }
+
+    res.json({
+      status: 'success',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Update appointment status error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Error updating appointment status',
+      details: error.message
+    });
+  }
+});
+
 // Get all doctors (including inactive)
 router.get('/doctors', async (req, res) => {
   try {

@@ -43,16 +43,14 @@ const verifyToken = async (req, res, next) => {
             console.error('JWT verification error:', jwtError);
             return res.status(401).json({
                 status: 'error',
-                message: 'Invalid token',
-                details: jwtError.message
+                message: 'Invalid token'
             });
         }
     } catch (error) {
         console.error('Auth middleware error:', error);
         return res.status(500).json({
             status: 'error',
-            message: 'Error verifying token',
-            details: error.message
+            message: 'Internal server error'
         });
     }
 };
@@ -60,36 +58,57 @@ const verifyToken = async (req, res, next) => {
 const isAdmin = async (req, res, next) => {
     try {
         const result = await pool.query(
-            'SELECT role FROM users WHERE id = $1',
-            [req.user.id]
+            'SELECT * FROM users WHERE id = $1 AND role = $2',
+            [req.user.id, 'admin']
         );
 
-        if (result.rows[0].role !== 'admin') {
+        if (result.rows.length === 0) {
             return res.status(403).json({
                 status: 'error',
-                message: 'Access denied. Admin role required.'
+                message: 'Access denied. Admin privileges required.'
             });
         }
 
         next();
     } catch (error) {
+        console.error('Admin check error:', error);
         return res.status(500).json({
             status: 'error',
-            message: 'Error checking admin role',
-            details: error.message
+            message: 'Internal server error'
         });
     }
 };
 
 const checkRole = (roles) => {
-    return (req, res, next) => {
-        if (!roles.includes(req.user.role)) {
-            return res.status(403).json({
+    return async (req, res, next) => {
+        try {
+            const result = await pool.query(
+                'SELECT * FROM users WHERE id = $1',
+                [req.user.id]
+            );
+
+            if (result.rows.length === 0) {
+                return res.status(401).json({
+                    status: 'error',
+                    message: 'User not found'
+                });
+            }
+
+            if (!roles.includes(result.rows[0].role)) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Access denied. Insufficient privileges.'
+                });
+            }
+
+            next();
+        } catch (error) {
+            console.error('Role check error:', error);
+            return res.status(500).json({
                 status: 'error',
-                message: 'Access denied'
+                message: 'Internal server error'
             });
         }
-        next();
     };
 };
 

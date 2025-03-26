@@ -16,6 +16,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 const { validateEmailDomain } = require('../middleware/auth');
+const { checkRole } = require('../middleware/auth');
 
 const validateSignup = [
     body('email').isEmail().normalizeEmail(),
@@ -319,5 +320,41 @@ router.post('/forgot-password', validatePasswordReset, forgotPassword);
 router.post('/reset-password', validateNewPassword, resetPassword);
 router.get('/profile', verifyToken, getProfile);
 router.post('/change-password', [verifyToken, validateNewPassword], changePassword);
+
+// Get user details
+router.get("/me", [verifyToken, checkRole(["patient", "admin"])], async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+        id,
+        name,
+        email,
+        role,
+        created_at,
+        updated_at
+      FROM users 
+      WHERE id = $1`,
+      [req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    res.json({
+      status: "success",
+      data: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Get user details error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Error fetching user details",
+    });
+  }
+});
 
 module.exports = router; 
